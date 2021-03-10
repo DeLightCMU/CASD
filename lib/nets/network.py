@@ -388,7 +388,7 @@ class Network(nn.Module):
                                                                        self._image_gt_summaries['ss_boxes_input'][0],
                                                                        self._image_gt_summaries['image_level_label'],
                                                                        self._im_info)
-        roi_labels_2_new = np.vstack((roi_labels_2[0], roi_labels_2[1], roi_labels_2[2], roi_labels_2[2]))
+        roi_labels_2_new = np.vstack((roi_labels_2[0], roi_labels_2[1], roi_labels_2[2], roi_labels_2[3]))
         keep_inds_2_new = np.concatenate((keep_inds_2[0], keep_inds_2[1] + pi, keep_inds_2[2] + pi*2, keep_inds_2[3] + pi*3))
         fg_num_2_new = fg_num_2[0] + fg_num_2[1] + fg_num_2[2] + fg_num_2[3]
         bg_num_2_new = bg_num_2[0] + bg_num_2[1] + bg_num_2[2] + bg_num_2[3]
