@@ -566,7 +566,7 @@ class Network(nn.Module):
     def return_ss_boxes(self, boxes_index, mode='TRAIN'):
         if mode == 'TEST':
             return boxes_index
-        box_num = min(1000, len(boxes_index))
+        box_num = min(1000, len(boxes_index))  # adjust the box number wrt GPU memory
         indexes = np.random.choice(boxes_index, size=box_num, replace=False)
         return indexes
 

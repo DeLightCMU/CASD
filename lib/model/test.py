@@ -116,7 +116,7 @@ def _rescale_boxes(boxes, inds, scales):
     return boxes
 
 def get_ss_boxes(roidb_i, im_scales):
-    ss_inds = np.where(roidb_i['gt_classes'] == -1)[0]  # remove gt_rois in ss_boxes
+    ss_inds = np.arange(1, roidb_i['gt_classes'].shape[0])
     ss_boxes = np.empty((len(ss_inds), 5), dtype=np.float32)
     ss_boxes[:, 1:] = roidb_i['boxes'][ss_inds, :] * im_scales
     ss_boxes[:, 0] = 0
@@ -133,9 +133,6 @@ def get_flipper_boxes(ss_box, width):
 
 def im_detect(net, im, roidb_i):
     blobs, im_scales, im_shape = _get_blobs(im)
-    # ss_boxes = get_ss_boxes(roidb_i, im_scales)
-    # assert len(im_scales) == 1, "Only single-image batch implemented"
-    # assert len(im_scales) == 5, "multiple scale test"
 
     im_blob_scales = blobs['data']
 
