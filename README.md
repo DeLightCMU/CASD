@@ -3,9 +3,7 @@ This is the official implementation of:
 
 **Zeyi Huang', Yang Zou', Vijayakumar Bhagavatula, and Dong Huang**, ***Comprehensive Attention Self-Distillation for Weakly-Supervised Object Detection***, **NeurIPS 2020**, [Arxiv version](https://arxiv.org/pdf/2010.12023.pdf).
 
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/comprehensive-attention-self-distillation-for/weakly-supervised-object-detection-on-mscoco)](https://paperswithcode.com/sota/weakly-supervised-object-detection-on-mscoco?p=comprehensive-attention-self-distillation-for)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/comprehensive-attention-self-distillation-for/weakly-supervised-object-detection-on-pascal)](https://paperswithcode.com/sota/weakly-supervised-object-detection-on-pascal?p=comprehensive-attention-self-distillation-for)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/comprehensive-attention-self-distillation-for/weakly-supervised-object-detection-on-pascal-1)](https://paperswithcode.com/sota/weakly-supervised-object-detection-on-pascal-1?p=comprehensive-attention-self-distillation-for)
+[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/comprehensive-attention-self-distillation-for/weakly-supervised-object-detection-on-mscoco)](https://paperswithcode.com/sota/weakly-supervised-object-detection-on-mscoco?p=comprehensive-attention-self-distillation-for)[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/comprehensive-attention-self-distillation-for/weakly-supervised-object-detection-on-pascal)](https://paperswithcode.com/sota/weakly-supervised-object-detection-on-pascal?p=comprehensive-attention-self-distillation-for)[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/comprehensive-attention-self-distillation-for/weakly-supervised-object-detection-on-pascal-1)](https://paperswithcode.com/sota/weakly-supervised-object-detection-on-pascal-1?p=comprehensive-attention-self-distillation-for)
 
 ### Citation: 
 
