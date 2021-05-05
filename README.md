@@ -83,6 +83,7 @@ Test a vgg16 Network on VOC 2007 test
 ```bash
 bash experiments/scripts/test_faster_rcnn.sh 0 pascal_voc vgg16
 ```
+Download log and weight from [here](https://drive.google.com/drive/folders/1p7iCBzp1HvAeLuW9RgTGB9X_meC58S_8?usp=sharing)
 
 ## Acknowledgement
 We borrowed code from [MLEM](https://github.com/vasgaowei/pytorch_MELM), [PCL](https://github.com/ppengtang/pcl.pytorch), and [Faster-RCNN](https://github.com/jwyang/faster-rcnn.pytorch).
