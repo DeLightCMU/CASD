@@ -23,7 +23,7 @@ def get_minibatch(roidb, num_classes, aug=None, iter=None):
     aug_time = 2
 
     # Sample random scales to use for each image in this batch
-    blobs = {'data': [], 'gt_boxes': [], 'im_info': [], 'image_level_labels': None, 'ss_boxes': [], 'flag': None}
+    blobs = {'data': [], 'gt_boxes': [], 'im_info': [], 'image_level_labels': [], 'ss_boxes': [], 'flag': None}
 
     zero_index = np.arange(len(cfg.TRAIN.SCALES))
     dumy_index = npr.choice(zero_index, size=aug_time, replace=False)
@@ -41,7 +41,7 @@ def get_minibatch(roidb, num_classes, aug=None, iter=None):
         assert len(roidb) == 1, "Single batch only"
 
         blobs['im_info'].append(np.array([im_blob.shape[1], im_blob.shape[2], im_scales[0]], dtype=np.float32))
-        blobs['image_level_labels'] = roidb[0]['image_level_labels']
+        blobs['image_level_labels'].append(roidb[0]['image_level_labels'])
 
         # add ss_boxes into blob
         # Changed for WSDNN

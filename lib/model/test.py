@@ -23,11 +23,12 @@ from utils.blob import im_list_to_blob
 
 from model.config import cfg, get_output_dir
 from model.bbox_transform import clip_boxes, bbox_transform_inv
+from utils.bbox import bbox_transform_inv as bbox_transform_inv1
+from utils.bbox import clip_boxes as clip_boxes1
 
 import torch
 
 from model.apmetric import AveragePrecisionMeter
-
 
 def _get_image_blob(im):
     """Converts an image into a network input.
@@ -112,7 +113,6 @@ def _rescale_boxes(boxes, inds, scales):
     """Rescale boxes according to image rescaling."""
     for i in range(boxes.shape[0]):
         boxes[i, :] = boxes[i, :] / scales[int(inds[i])]
-
     return boxes
 
 def get_ss_boxes(roidb_i, im_scales):
@@ -122,7 +122,6 @@ def get_ss_boxes(roidb_i, im_scales):
     ss_boxes[:, 0] = 0
     return ss_boxes
 
-
 def get_flipper_boxes(ss_box, width):
     oldx1 = ss_box[:, 1].copy()
     oldx2 = ss_box[:, 3].copy()
@@ -130,10 +129,16 @@ def get_flipper_boxes(ss_box, width):
     ss_box[:, 3] = width - oldx1 - 1
     return ss_box
 
+def get_flipper_boxes1(ss_box, width):
+    oldx1 = ss_box[:, 0].copy()
+    oldx2 = ss_box[:, 2].copy()
+    ss_box[:, 0] = width - oldx2 - 1
+    ss_box[:, 2] = width - oldx1 - 1
+    return ss_box
 
 def im_detect(net, im, roidb_i):
+    process = 'mean'
     blobs, im_scales, im_shape = _get_blobs(im)
-
     im_blob_scales = blobs['data']
 
     score_list = []
@@ -143,6 +148,7 @@ def im_detect(net, im, roidb_i):
     for index, scale in enumerate(im_scales):
         im_blob = im_blob_scales[index]
         ss_boxes = get_ss_boxes(roidb_i, scale)
+        num_ss = ss_boxes.shape[0]
         h, w = im_shape[index][0], im_shape[index][1]
         ss_boxes_2 = ss_boxes.copy()
         ss_boxes = _shuffle_boxes(ss_boxes, w, h)
@@ -153,25 +159,39 @@ def im_detect(net, im, roidb_i):
         for k in range(2):   # input and its flip
             if k % 2 == 1:
                 im_blob_flip = im_blob_flip[np.newaxis, :, :, :]
-                img_info = np.array([im_blob.shape[1], im_blob.shape[2], scale], dtype=np.float32)
-                bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1, refine_prob_2 = net.test_image(im_blob_flip, img_info, ss_boxes_flip)
-                boxes = ss_boxes_2[:, 1:5] / scale
+                img_info = np.array([im_blob_flip.shape[1], im_blob_flip.shape[2], scale], dtype=np.float32)
+                bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1, refine_prob_2, bbox_pred_1, bbox_pred_2 = net.test_image(
+                    im_blob_flip, img_info, ss_boxes_flip)
+                boxes = ss_boxes_flip[:, 1:5]
             else:
                 im_blob = im_blob[np.newaxis, :, :, :]
                 img_info = np.array([im_blob.shape[1], im_blob.shape[2], scale], dtype=np.float32)
-                bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1, refine_prob_2 = net.test_image(im_blob, img_info, ss_boxes)
-                boxes = ss_boxes[:, 1:5] / scale
-
-            # scores = np.reshape((refine_prob_1 + refine_prob_2) / 2, [det_cls_prob_product.shape[0], -1])
-            scores = np.reshape(refine_prob_1, [det_cls_prob_product.shape[0], -1])
-            bbox_pred = np.reshape(bbox_pred, [bbox_pred.shape[0], -1])
+                bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1, refine_prob_2, bbox_pred_1, bbox_pred_2 = net.test_image(
+                    im_blob, img_info, ss_boxes)
+                boxes = ss_boxes[:, 1:5]
 
             if cfg.TEST.BBOX_REG:
-                box_deltas = bbox_pred
-                pred_boxes = bbox_transform_inv(torch.from_numpy(boxes), torch.from_numpy(box_deltas)).numpy()
-                pred_boxes = _clip_boxes(pred_boxes, im.shape)
+                box_deltas = torch.cat((bbox_pred_1, bbox_pred_2), dim=0)
+                box_deltas = box_deltas.view(-1, 4) * torch.FloatTensor([0.1000, 0.1000, 0.2000, 0.2000]).cuda() \
+                             + torch.FloatTensor([0., 0., 0., 0.]).cuda()
+                box_deltas = box_deltas.view(1, -1, 4 * 20)
+                boxes = np.concatenate((boxes, boxes), axis=0)
+                pred_boxes_tmp = bbox_transform_inv1(torch.from_numpy(boxes).cuda().view(1, -1, 4), box_deltas, 1)
+
+                if k % 2 == 1:
+                    pred_boxes_tmp = get_flipper_boxes1(pred_boxes_tmp.copy(), im_blob.shape[2])
+                pred_boxes_tmp = clip_boxes1(pred_boxes_tmp / scale, torch.from_numpy(np.asarray(im_shape[index])).cuda().view(1, 3), 1).cpu().numpy()[0, :]
             else:
-                pred_boxes = np.tile(boxes, (1, scores.shape[1]))
+                pred_boxes_tmp = np.tile(boxes, (1, refine_prob_1.shape[1]))
+
+            if process == "mean":
+                # scores = np.reshape((refine_prob_1 + refine_prob_2) / 2, [det_cls_prob_product.shape[0], -1])
+                scores = refine_prob_1
+                # pred_boxes = (pred_boxes_tmp[0:num_ss] + pred_boxes_tmp[num_ss: num_ss * 2])/2
+                pred_boxes = pred_boxes_tmp[0:num_ss]
+            else:
+                raise ValueError
+
             score_list.append(scores)
             pred_box_list.append(pred_boxes)
             det_cls_list.append(det_cls_prob)

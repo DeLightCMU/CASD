@@ -273,7 +273,7 @@ class SolverWrapper(object):
       now = time.time()
       if iter == 1 or now - last_summary_time > cfg.TRAIN.SUMMARY_INTERVAL:
         # Compute the graph with summary
-        cls_det_loss, refine_loss_1, refine_loss_2, consistency_loss, total_loss, summary = \
+        cls_det_loss, refine_loss_1, refine_loss_2, total_loss, summary = \
           self.net.train_step_with_summary(blobs, self.optimizer, iter)
         # cls_det_loss, refine_loss_1, refine_loss_2, total_loss, summary = \
         #   self.net.train_step_with_summary(blobs, self.optimizer, iter)
@@ -288,7 +288,7 @@ class SolverWrapper(object):
       else:
         # Compute the graph without summary
         #cls_det_loss, refine_loss_1, refine_loss_2, total_loss = self.net.train_step(blobs, self.optimizer, iter)
-        cls_det_loss, refine_loss_1, refine_loss_2, consistency_loss, total_loss = self.net.train_step(blobs,self.optimizer,iter)
+        cls_det_loss, refine_loss_1, refine_loss_2, total_loss = self.net.train_step(blobs,self.optimizer,iter)
       utils.timer.timer.toc()
 
       # Display training information
@@ -297,8 +297,8 @@ class SolverWrapper(object):
         #       '>>> refine_loss_1: %.6f\n >>> refine_loss_2: %.6f\n >>> lr: %f' % \
         #       (iter, max_iters, total_loss, cls_det_loss, refine_loss_1, refine_loss_2, lr))
         print('iter: %d / %d, total loss: %.6f\n >>> cls_det_loss: %.6f\n '
-              '>>> refine_loss_1: %.6f\n >>> refine_loss_2: %.6f\n >>> consistency_loss: %.6f\n >>> lr: %f' % \
-              (iter, max_iters, total_loss, cls_det_loss, refine_loss_1, refine_loss_2, consistency_loss, lr))
+              '>>> refine_loss_1: %.6f\n >>> refine_loss_2: %.6f\n >>> lr: %f' % \
+              (iter, max_iters, total_loss, cls_det_loss, refine_loss_1, refine_loss_2, lr))
         print('speed: {:.3f}s / iter'.format(utils.timer.timer.average_time()))
 
         # for k in utils.timer.timer._average_time.keys():

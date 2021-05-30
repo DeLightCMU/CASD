@@ -20,7 +20,7 @@ from ops.roi_align import RoIAlign
 from ops.roi_ring_pool import RoIRingPool
 
 from model.config import cfg
-from utils.bbox import bbox_overlaps
+from utils.bbox import bbox_overlaps, compute_targets_pytorch, get_bbox_regression_labels_pytorch, smooth_l1_loss
 import tensorboardX as tb
 
 from scipy.misc import imresize
@@ -54,7 +54,7 @@ class Network(nn.Module):
         self.RoIRingPool_context = RoIRingPool(cfg.POOLING_SIZE, cfg.POOLING_SIZE, 1. / 16, 1.0, 1.8)
         self.RoIRingPool_frame = RoIRingPool(cfg.POOLING_SIZE, cfg.POOLING_SIZE, 1. / 16, 1.0 / 1.8, 1.0)
         self.aug_time = 4
-        self.ca_iw = True
+        self.ca_iw = False
 
     def _add_gt_image(self):
         # add back mean
@@ -218,16 +218,19 @@ class Network(nn.Module):
             self.ca_iw = False
         return ramp_weight
 
-    def _add_losses(self, roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, step=None, rois=None):
+    def _add_losses(self, roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bt1, fg1, lf1, bt2, fg2, lf2, step=None, rois=None):
         det_cls_prob = self._predictions['det_cls_prob']
         det_cls_prob = det_cls_prob.view(-1)
-        label = self._image_level_label.view(-1)
-        pi = self.ss_boxes_indexes.shape[0]
+        label = self._image_level_label[0].view(-1)
+        pi = self.min_num
         rampweight = self._rampweight(step)
 
         refine_prob_1 = self._predictions['refine_prob_1']
         refine_prob_2 = self._predictions['refine_prob_2']
         # refine_prob_3 = self._predictions['refine_prob_3']
+
+        bbox_pred_1 = self._predictions['bbox_pred_1']
+        bbox_pred_2 = self._predictions['bbox_pred_2']
 
         # caculating the loss of the first branch
         roi_labels, keep_inds = roi_labels_1, keep_inds_1,
@@ -239,6 +242,12 @@ class Network(nn.Module):
         refine_loss_1 -= torch.sum(torch.mul(roi_labels_each, torch.log(refine_prob_1[keep_inds[2] + pi * 2]))) / roi_labels_each.shape[0]
         roi_labels_each = torch.tensor(roi_labels[3][keep_inds[3], :], dtype=torch.float32).cuda()
         refine_loss_1 -= torch.sum(torch.mul(roi_labels_each, torch.log(refine_prob_1[keep_inds[3] + pi * 3]))) / roi_labels_each.shape[0]
+
+        fg_ind_1 = np.concatenate((fg1[0], fg1[1] + pi, fg1[2] + pi * 2, fg1[3] + pi * 3), axis=None)
+        fg_label_1 = np.concatenate((lf1[0], lf1[1], lf1[2], lf1[3]), axis=None)
+        corres_inds = 4 * fg_label_1[:, None] + np.array([0, 1, 2, 3])
+        reg_loss_1 = torch.sum(smooth_l1_loss(bbox_pred_1[fg_ind_1[:, None], corres_inds], bt1[0, :], beta=1, reduction=False))
+        reg_loss_1 /= (fg1[0].shape[0] * 4)
 
         consistency_conf_loss = 0
         if self.ca_iw:
@@ -267,6 +276,12 @@ class Network(nn.Module):
         roi_labels_each = torch.tensor(roi_labels[3][keep_inds[3], :], dtype=torch.float32).cuda()
         refine_loss_2 -= torch.sum(torch.mul(roi_labels_each, torch.log(refine_prob_2[keep_inds[3] + pi * 3]))) / roi_labels_each.shape[0]
 
+        fg_ind_2 = np.concatenate((fg2[0], fg2[1] + pi, fg2[2] + pi * 2, fg2[3] + pi * 3), axis=None)
+        fg_label_2 = np.concatenate((lf2[0], lf2[1], lf2[2], lf2[3]), axis=None)
+        corres_inds = 4 * fg_label_2[:, None] + np.array([0, 1, 2, 3])
+        reg_loss_2 = torch.sum(smooth_l1_loss(bbox_pred_2[fg_ind_2[:, None], corres_inds], bt2[0, :], beta=1, reduction=False))
+        reg_loss_2 /= (fg2[0].shape[0] * 4)
+
         if self.ca_iw:
             keep_inds_new = np.concatenate((keep_inds[0], keep_inds[0]+pi, keep_inds[0]+pi*2, keep_inds[0]+pi*3))
             num_each = int(keep_inds_new.shape[0] / 4)
@@ -288,13 +303,15 @@ class Network(nn.Module):
         zeros = torch.zeros(det_cls_prob.shape, dtype=det_cls_prob.dtype, device=det_cls_prob.device)
         max_zeros = torch.max(zeros, 1 - torch.mul(label_new, det_cls_prob))
         cls_det_loss = torch.sum(max_zeros)
-        loss = cls_det_loss / 20 + refine_loss_1 * 0.1 + refine_loss_2 * 0.1 + consistency_conf_loss * 0.1
+        loss = cls_det_loss / 20 + refine_loss_1 * 0.1 + refine_loss_2 * 0.1 + reg_loss_1 * 0.1 + reg_loss_2 * 0.1
         loss /= float(self.aug_time)
 
         self._losses['total_loss'] = loss
         self._losses['cls_det_loss'] = cls_det_loss / 20
         self._losses['refine_loss_1'] = refine_loss_1 * 0.1
         self._losses['refine_loss_2'] = refine_loss_2 * 0.1
+        self._losses['reg_loss_1'] = reg_loss_1
+        self._losses['reg_loss_2'] = reg_loss_2
         # self._losses['refine_loss_3'] = refine_loss_3
         if self.ca_iw is False:
             consistency_conf_loss = torch.zeros([1])
@@ -326,6 +343,12 @@ class Network(nn.Module):
         self._predictions['refine_prob_1'] = refine_prob_1
         self._predictions['refine_prob_2'] = refine_prob_2
         # self._predictions['refine_prob_3'] = refine_prob_3
+
+        bbox_pred_1 = self.bbox_pred_net_1(fc7_roi)
+        bbox_pred_2 = self.bbox_pred_net_2(fc7_roi)
+        self._predictions['bbox_pred_1'] = bbox_pred_1
+        self._predictions['bbox_pred_2'] = bbox_pred_2
+
         self._predictions["bbox_pred"] = bbox_pred
         self._predictions['det_cls_prob_product'] = det_cls_prob_product
         self._predictions['det_cls_prob'] = det_cls_prob
@@ -343,7 +366,8 @@ class Network(nn.Module):
         det_score = frame_score - context_score
 
         cls_prob = F.softmax(cls_score, dim=1)
-        pi = self.ss_boxes_indexes.shape[0]
+        #pi = self.ss_boxes_indexes.shape[0]
+        pi = self.min_num
         if self._mode == 'TRAIN':
             ss_rois_num_each = int(cls_score.shape[0] / 4)
             assert ss_rois_num_each == pi
@@ -375,23 +399,23 @@ class Network(nn.Module):
         self._predictions['det_cls_prob'] = det_cls_prob
         self._predictions['det_cls_prob_product'] = det_cls_prob_product2
 
-        roi_labels_1, keep_inds_1, fg_num_1, bg_num_1 = get_refine_supervision_ac4_IA(det_cls_prob_product2,
-                                                                       self._image_gt_summaries['ss_boxes_input'][0],
-                                                                       self._image_gt_summaries['image_level_label'],
-                                                                       self._im_info)
+        roi_labels_1, keep_inds_1, fg_num_1, bg_num_1, bbox_targets_1, label_fg_1 = get_refine_supervision_ac4_IA(det_cls_prob_product2,
+                                                                        self._image_gt_summaries['ss_boxes_input'],
+                                                                        self._image_gt_summaries['image_level_label'],
+                                                                        self._im_info)
         roi_labels_1_new = np.vstack((roi_labels_1[0], roi_labels_1[1], roi_labels_1[2], roi_labels_1[3]))
         keep_inds_1_new = np.concatenate((keep_inds_1[0], keep_inds_1[1] + pi, keep_inds_1[2] + pi*2, keep_inds_1[3] + pi*3))
-        fg_num_1_new = fg_num_1[0] + fg_num_1[1] + fg_num_1[2] + fg_num_1[3]
-        bg_num_1_new = bg_num_1[0] + bg_num_1[1] + bg_num_1[2] + bg_num_1[3]
+        fg_num_1_new = len(fg_num_1[0]) + len(fg_num_1[1]) + len(fg_num_1[2]) + len(fg_num_1[3])
+        bg_num_1_new = len(bg_num_1[0]) + len(bg_num_1[1]) + len(bg_num_1[2]) + len(bg_num_1[3])
 
-        roi_labels_2, keep_inds_2, fg_num_2, bg_num_2 = get_refine_supervision_ac4_IA(refine_prob_1_new,
-                                                                       self._image_gt_summaries['ss_boxes_input'][0],
+        roi_labels_2, keep_inds_2, fg_num_2, bg_num_2, bbox_targets_2, label_fg_2 = get_refine_supervision_ac4_IA(refine_prob_1_new,
+                                                                       self._image_gt_summaries['ss_boxes_input'],
                                                                        self._image_gt_summaries['image_level_label'],
                                                                        self._im_info)
         roi_labels_2_new = np.vstack((roi_labels_2[0], roi_labels_2[1], roi_labels_2[2], roi_labels_2[3]))
         keep_inds_2_new = np.concatenate((keep_inds_2[0], keep_inds_2[1] + pi, keep_inds_2[2] + pi*2, keep_inds_2[3] + pi*3))
-        fg_num_2_new = fg_num_2[0] + fg_num_2[1] + fg_num_2[2] + fg_num_2[3]
-        bg_num_2_new = bg_num_2[0] + bg_num_2[1] + bg_num_2[2] + bg_num_2[3]
+        fg_num_2_new = len(fg_num_2[0]) + len(fg_num_2[1]) + len(fg_num_2[2]) + len(fg_num_2[3])
+        bg_num_2_new = len(bg_num_2[0]) + len(bg_num_2[1]) + len(bg_num_2[2]) + len(bg_num_2[3])
 
         self.eval()
         gt = np.argmax(roi_labels_1_new, axis=1)
@@ -413,10 +437,15 @@ class Network(nn.Module):
         refine_prob_2 = F.softmax(refine_score_2, dim=1)
         # refine_prob_3 = F.softmax(refine_score_3, dim=1)
 
+        bbox_pred_1 = self.bbox_pred_net_1(fc7_roi_1)
+        bbox_pred_2 = self.bbox_pred_net_2(fc7_roi_2)
+
         self._predictions['refine_prob_1'] = refine_prob_1
         self._predictions['refine_prob_2'] = refine_prob_2
         # self._predictions['refine_prob_3'] = refine_prob_3
-        return roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_pred
+        self._predictions['bbox_pred_1'] = bbox_pred_1
+        self._predictions['bbox_pred_2'] = bbox_pred_2
+        return roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_pred, bbox_targets_1, fg_num_1, label_fg_1, bbox_targets_2, fg_num_2, label_fg_2
 
     def _image_to_head(self):
         raise NotImplementedError
@@ -440,8 +469,8 @@ class Network(nn.Module):
         self._init_head_tail()
         self.cls_score_net = nn.Linear(self._fc7_channels, self._num_classes)
         self.det_score_net = nn.Linear(self._fc7_channels, self._num_classes)
-        #self.bbox_pred_net = nn.Linear(self._fc7_channels, self._num_classes)
-        self.bbox_pred_net = nn.Linear(self._fc7_channels, self._num_classes * 4)
+        self.bbox_pred_net_1 = nn.Linear(self._fc7_channels, self._num_classes * 4 + 4)
+        self.bbox_pred_net_2 = nn.Linear(self._fc7_channels, self._num_classes * 4 + 4)
         self.refine_net_1 = nn.Linear(self._fc7_channels, self._num_classes + 1)
         self.refine_net_2 = nn.Linear(self._fc7_channels, self._num_classes + 1)
         # self.refine_net_3 = nn.Linear(self._fc7_channels, self._num_classes + 1)
@@ -504,9 +533,9 @@ class Network(nn.Module):
         else:
             rois = None
 
-        roi_labels_1, keep_inds_1, \
-        roi_labels_2, keep_inds_2, bbox_pred = self._region_classification_train(pool5_roi, fc7_roi,fc7_context, fc7_frame, step)
-        return roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_pred, rois
+        roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_pred, \
+        bbox_targets_1, fg_1, lf_1, bbox_targets_2, fg_2, lf_2 = self._region_classification_train(pool5_roi, fc7_roi,fc7_context,fc7_frame, step)
+        return roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_pred, rois, bbox_targets_1, fg_1, lf_1, bbox_targets_2, fg_2, lf_2
 
     def _predict_test(self, ss_boxes):
         torch.backends.cudnn.benchmark = False
@@ -534,7 +563,7 @@ class Network(nn.Module):
         self._image_gt_summaries['im_info'] = im_info
         self._mode = mode
         self._im_info = im_info
-        self._image_level_label = torch.from_numpy(image_level_label) if image_level_label is not None else None
+        self._image_level_label = []
 
         if mode == 'TEST':
             self._image_gt_summaries['ss_boxes'] = ss_boxes
@@ -543,15 +572,17 @@ class Network(nn.Module):
             self.ss_boxes_indexes = self.return_ss_boxes(np.arange(ss_boxes.shape[0]), mode)
             rois, cls_prob, det_prob, bbox_pred, cls_det_prob_product, det_cls_prob = self._predict_test(ss_boxes[self.ss_boxes_indexes, :])
             bbox_pred = bbox_pred[:, :80]
-            stds = bbox_pred.data.new(cfg.TRAIN.BBOX_NORMALIZE_STDS).repeat(self._num_classes).unsqueeze(0).expand_as(bbox_pred)
-            means = bbox_pred.data.new(cfg.TRAIN.BBOX_NORMALIZE_MEANS).repeat(self._num_classes).unsqueeze(0).expand_as(bbox_pred)
-            self._predictions["bbox_pred"] = bbox_pred.mul(stds).add(means)
+            # stds = bbox_pred.data.new(cfg.TRAIN.BBOX_NORMALIZE_STDS).repeat(self._num_classes).unsqueeze(0).expand_as(bbox_pred)
+            # means = bbox_pred.data.new(cfg.TRAIN.BBOX_NORMALIZE_MEANS).repeat(self._num_classes).unsqueeze(0).expand_as(bbox_pred)
+            # self._predictions["bbox_pred"] = bbox_pred.mul(stds).add(means)
         else:
             ss_boxes_all = []
             self._image = []
             self._image_gt_summaries['ss_boxes_input'] = []
-            self._image_level_label = torch.from_numpy(image_level_label) if image_level_label is not None else None
-            self.ss_boxes_indexes = self.return_ss_boxes(np.arange(ss_boxes[0].shape[0]), mode)
+            self.min_num = min(1000, ss_boxes[0].shape[0])   # Note:change 1000 to 500 when using gpu with 12GB memory
+            for i in range(2):
+                self._image_level_label.append(torch.from_numpy(image_level_label[i]))
+            self.ss_boxes_indexes = self.return_ss_boxes(np.arange(ss_boxes[0].shape[0]), self.min_num, mode)
             for i in range(2):
                 image_org = torch.from_numpy(image[i].transpose([0, 3, 1, 2]).copy()).to(self._device)
                 self._image.append(image_org)
@@ -559,14 +590,15 @@ class Network(nn.Module):
                 ss_boxes_all.append(ss_boxes_input[:, self.ss_boxes_indexes, :])
             self._image_gt_summaries['ss_boxes_input'] = ss_boxes_all
 
-            roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_pred, rois = self._predict_train(ss_boxes_all, step)
-            bbox_pred = bbox_pred[:, :80]
-            self._add_losses(roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, step=step, rois=rois)
+            roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_pred, rois, bbox_targets_1, fg1, lf1, \
+                                    bbox_targets_2, fg2, lf2 = self._predict_train(ss_boxes_all, step)
+            self._add_losses(roi_labels_1, keep_inds_1, roi_labels_2, keep_inds_2, bbox_targets_1, fg1, lf1, \
+                                    bbox_targets_2, fg2, lf2, step=step, rois=rois)
 
-    def return_ss_boxes(self, boxes_index, mode='TRAIN'):
+    def return_ss_boxes(self, boxes_index, min_num, mode='TRAIN'):
         if mode == 'TEST':
             return boxes_index
-        box_num = min(1000, len(boxes_index))  # adjust the box number wrt GPU memory
+        box_num = min(min_num, len(boxes_index))
         indexes = np.random.choice(boxes_index, size=box_num, replace=False)
         return indexes
 
@@ -586,7 +618,8 @@ class Network(nn.Module):
         # normal_init(self.rpn_bbox_pred_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
         normal_init(self.cls_score_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
         normal_init(self.det_score_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
-        normal_init(self.bbox_pred_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
+        normal_init(self.bbox_pred_net_1, 0, 0.001, cfg.TRAIN.TRUNCATED)
+        normal_init(self.bbox_pred_net_2, 0, 0.001, cfg.TRAIN.TRUNCATED)
         # normal_init(self.bbox_pred_net, 0, 0.001, cfg.TRAIN.TRUNCATED)
         normal_init(self.refine_net_1, 0, 0.01, cfg.TRAIN.TRUNCATED)
         normal_init(self.refine_net_2, 0, 0.01, cfg.TRAIN.TRUNCATED)
@@ -607,15 +640,17 @@ class Network(nn.Module):
         with torch.no_grad():
             self.forward(image, None, im_info, None, ss_boxes, mode='TEST')
 
-        bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1, refine_prob_2 = \
+        bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1, refine_prob_2, bbox_pred_1, bbox_pred_2 = \
             self._predictions['bbox_pred'].data.cpu().numpy(), \
             self._predictions['rois'].data.cpu().numpy(), \
             self._predictions['det_cls_prob'].data.cpu().numpy(), \
             self._predictions['det_cls_prob_product'].data.cpu().numpy(), \
             self._predictions['refine_prob_1'].data.cpu().numpy(), \
-            self._predictions['refine_prob_2'].data.cpu().numpy()
+            self._predictions['refine_prob_2'].data.cpu().numpy(), \
+            self._predictions['bbox_pred_1'].data, \
+            self._predictions['bbox_pred_2'].data
 
-        return bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1[:, 1:], refine_prob_2[:, 1:]
+        return bbox_pred, rois, det_cls_prob, det_cls_prob_product, refine_prob_1[:, 1:], refine_prob_2[:, 1:], bbox_pred_1[:, 4:], bbox_pred_2[:, 4:]
 
     def delete_intermediate_states(self):
         # Delete intermediate result to save memory
@@ -632,10 +667,9 @@ class Network(nn.Module):
 
     def train_step(self, blobs, train_op, step):
         self.forward(blobs['data'], blobs['image_level_labels'], blobs['im_info'], blobs['gt_boxes'], blobs['ss_boxes'], step)
-        cls_det_loss, refine_loss_1, refine_loss_2, consistency_loss, loss = self._losses['cls_det_loss'].item(), \
+        cls_det_loss, refine_loss_1, refine_loss_2, loss = self._losses['cls_det_loss'].item(), \
                                                                              self._losses['refine_loss_1'].item(), \
                                                                              self._losses['refine_loss_2'].item(), \
-                                                                             self._losses['consistency_loss'].item(), \
                                                                              self._losses['total_loss'].item()
         train_op.zero_grad()
         self._losses['total_loss'].backward()
@@ -644,14 +678,13 @@ class Network(nn.Module):
         self.delete_intermediate_states()
         #torch.cuda.empty_cache()
 
-        return cls_det_loss, refine_loss_1, refine_loss_2, consistency_loss, loss
+        return cls_det_loss, refine_loss_1, refine_loss_2, loss
 
     def train_step_with_summary(self, blobs, train_op, step):
         self.forward(blobs['data'], blobs['image_level_labels'], blobs['im_info'], blobs['gt_boxes'], blobs['ss_boxes'], step)
-        cls_det_loss, refine_loss_1, refine_loss_2, consistency_loss, loss = self._losses["cls_det_loss"].item(), \
+        cls_det_loss, refine_loss_1, refine_loss_2, loss = self._losses["cls_det_loss"].item(), \
                                                            self._losses['refine_loss_1'].item(), \
                                                            self._losses['refine_loss_2'].item(), \
-                                                           self._losses['consistency_loss'].item(), \
                                                            self._losses['total_loss'].item()
         train_op.zero_grad()
         self._losses['total_loss'].backward()
@@ -659,7 +692,7 @@ class Network(nn.Module):
         # summary = self._run_summary_op()
         summary = 0
         self.delete_intermediate_states()
-        return cls_det_loss, refine_loss_1, refine_loss_2, consistency_loss, loss, summary
+        return cls_det_loss, refine_loss_1, refine_loss_2, loss, summary
 
 
     def train_step_no_return(self, blobs, train_op):
@@ -772,6 +805,14 @@ def _get_proposal_clusters(all_rois, proposals, im_labels):
     max_overlaps = overlaps.max(axis=1)
     labels = gt_labels[gt_assignment, 0]
     # cls_loss_weights = gt_scores[gt_assignment, 0]
+    gt_index_relative = np.where(overlaps[:, :] == 1)[0]
+    gt_index = np.ones(gt_index_relative.shape, dtype=int)
+    assert gt_index_relative.shape[0] == gt_boxes.shape[0]
+    for i in range(gt_boxes.shape[0]):
+        for j in range(gt_boxes.shape[0]):
+            if (gt_boxes[i] == all_rois[gt_index_relative[j]]).all():
+                gt_index[i] = gt_index_relative[j]
+                break
 
     # # Select foreground RoIs as those with >= FG_THRESH overlap
     # fg_inds = np.where(max_overlaps >= cfg.TRAIN.FG_THRESH)[0]
@@ -797,7 +838,7 @@ def _get_proposal_clusters(all_rois, proposals, im_labels):
     #     pc_labels[i] = gt_labels[i, 0]
     #     pc_count[i] = len(po_index)
     #     pc_probs[i] = np.average(cls_prob[po_index, pc_labels[i]])
-    return max_overlaps, labels
+    return max_overlaps, labels, gt_assignment, gt_index
 
 
 def get_refine_supervision_ac4_IA(refine_prob, ss_boxes, image_level_label, im_info=None):
@@ -808,30 +849,35 @@ def get_refine_supervision_ac4_IA(refine_prob, ss_boxes, image_level_label, im_i
     '''
     keep_inds_list = []
     roi_labels_list = []
-    pi = ss_boxes.shape[1]
+    pi = ss_boxes[0].shape[1]
     fg_len = []
     bg_len = []
+    labels_fg_list = []
 
     refine_prob_each = (refine_prob[0:pi, :] + refine_prob[pi:pi*2, :] + refine_prob[pi*2:pi*3, :] + refine_prob[pi*3:pi*4, :]) / 4.0
     for i in range(1):
-        ss_boxes_each = ss_boxes[i, :]
+        ss_boxes_each = ss_boxes[i][0, :]
 
         cls_prob = refine_prob_each.data.cpu().numpy()
         boxes = ss_boxes_each[:, 1:].copy()
 
-        if refine_prob.shape[1] == image_level_label.shape[1] + 1:
+        if refine_prob.shape[1] == image_level_label[0].shape[1] + 1:  # ---
             cls_prob = cls_prob[:, 1:]
-        roi_labels = np.zeros([pi, image_level_label.shape[1] + 1], dtype=np.int32)
+        roi_labels = np.zeros([pi, image_level_label[0].shape[1] + 1], dtype=np.int32)  # ---
         roi_labels[:, 0] = 1  # the 0th elements is the bg
         roi_weights = np.zeros((pi, 1), dtype=np.float32)  # num_box x 1 weights of the rois
 
         eps = 1e-9
         cls_prob[cls_prob < eps] = eps
         cls_prob[cls_prob > 1 - eps] = 1 - eps
-        proposals = _get_graph_centers(boxes.copy(), cls_prob.copy(), image_level_label.copy())
-        # proposals_list.append(proposals)
+        proposals = _get_graph_centers(boxes.copy(), cls_prob.copy(), image_level_label[0].copy())
 
-        max_overlaps, labels = _get_proposal_clusters(boxes.copy(), proposals, image_level_label.copy())
+        max_overlaps, labels, gt_assignment, gt_index = _get_proposal_clusters(boxes.copy(), proposals, image_level_label[0].copy())
+        ss_boxes_list = []
+        ss_boxes_list.append(ss_boxes[0][0, :, 1:])
+        ss_boxes_list.append(ss_boxes[0][1, :, 1:])
+        ss_boxes_list.append(ss_boxes[1][0, :, 1:])
+        ss_boxes_list.append(ss_boxes[1][1, :, 1:])
 
         fg_inds = np.where(max_overlaps > cfg.TRAIN.MIL_FG_THRESH)[0]
 
@@ -862,10 +908,33 @@ def get_refine_supervision_ac4_IA(refine_prob, ss_boxes, image_level_label, im_i
             for n in range(1):
                 keep_inds = np.concatenate([fg_inds_tmp, bg_inds_tmp])
                 keep_inds_list.append(keep_inds)
-                #roi_labels_list.append(roi_labels[keep_inds, :])
                 roi_labels_list.append(roi_labels)
-                fg_len.append(len(fg_inds_tmp))
-                bg_len.append(len(bg_inds_tmp))
+                fg_len.append(fg_inds_tmp)
+                bg_len.append(bg_inds_tmp)
+                labels_fg_list.append(labels[fg_inds_tmp])
 
-    return roi_labels_list, keep_inds_list, fg_len, bg_len
+        rois_per_image = len(fg_inds_tmp)
+        labels_batch = np.zeros((1, rois_per_image * 4), dtype=np.int32)
+        rois_batch = np.zeros((1, rois_per_image * 4, 4), dtype=np.float32)
+        gt_rois_batch = np.zeros((1, rois_per_image * 4, 4), dtype=np.float32)
+        overlaps = None
+        for y in range(4):
+            keep_inds = fg_len[y]
+            rois_batch[0, rois_per_image * y: rois_per_image * (y + 1)] = ss_boxes_list[y][keep_inds]
+            gt_boxes = ss_boxes_list[y][gt_index]
+            if y == 0:
+               overlaps = bbox_overlaps(
+                   gt_boxes.astype(dtype=np.float32, copy=False),
+                   ss_boxes_list[y].astype(dtype=np.float32, copy=False))
+            for v in range(gt_boxes.shape[0]):
+                gt_corres_ind = np.where(overlaps[v] > 0.6)[0]
+                gt_boxes[v] = ss_boxes_list[y][gt_corres_ind].mean(axis=0)
+            gt_rois_batch[0, rois_per_image * y: rois_per_image * (y + 1)] = gt_boxes[gt_assignment[keep_inds]]
+
+        rois_batch = torch.from_numpy(rois_batch).cuda()
+        gt_rois_batch = torch.from_numpy(gt_rois_batch).cuda()
+        bbox_target_data = compute_targets_pytorch(rois_batch, gt_rois_batch)
+
+    return roi_labels_list, keep_inds_list, fg_len, bg_len, bbox_target_data, labels_fg_list
+
 
