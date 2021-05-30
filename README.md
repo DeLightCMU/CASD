@@ -1,7 +1,8 @@
 # Comprehensive Attention Self-Distillation for Weakly-Supervised Object Detection
-This is the official implementation of:
 
 Update(May 30): Please use the lastest parallelized version.
+
+This is the official implementation of:
 
 **Zeyi Huang', Yang Zou', Vijayakumar Bhagavatula, and Dong Huang**, ***Comprehensive Attention Self-Distillation for Weakly-Supervised Object Detection***, **NeurIPS 2020**, [Arxiv version](https://arxiv.org/pdf/2010.12023.pdf).
 
