@@ -74,7 +74,7 @@ def _get_image_blob(roidb, scale_inds, aug, target_size, iter=None):
     im_scales = []
     for i in range(num_images):
         im = cv2.imread(roidb[i]['image'])
-        if iter >= (cfg.TRAIN.STEP_ITERS - cfg.TRAIN.SNAPSHOT_ITERS):
+        if iter >= (cfg.TRAIN.STEP_ITERS - cfg.TRAIN.SNAPSHOT_ITERS*2):
             im, _, _ = aug(im, None, None)
 
         if roidb[i]['flipped']:
