@@ -579,7 +579,7 @@ class Network(nn.Module):
             ss_boxes_all = []
             self._image = []
             self._image_gt_summaries['ss_boxes_input'] = []
-            self.min_num = min(1000, ss_boxes[0].shape[0])   # Note:change 1000 to 500 when using gpu with 12GB memory
+            self.min_num = min(800, ss_boxes[0].shape[0])   # Note:change to 500-1000 based on your GPU memory
             for i in range(2):
                 self._image_level_label.append(torch.from_numpy(image_level_label[i]))
             self.ss_boxes_indexes = self.return_ss_boxes(np.arange(ss_boxes[0].shape[0]), self.min_num, mode)
