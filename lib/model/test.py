@@ -130,10 +130,10 @@ def get_flipper_boxes(ss_box, width):
     return ss_box
 
 def get_flipper_boxes1(ss_box, width):
-    oldx1 = ss_box[:, 0].copy()
-    oldx2 = ss_box[:, 2].copy()
-    ss_box[:, 0] = width - oldx2 - 1
-    ss_box[:, 2] = width - oldx1 - 1
+    oldx1 = ss_box[:,:, 0::4].clone()
+    oldx2 = ss_box[:,:, 2::4].clone()
+    ss_box[:,:, 0::4] = width - oldx2 - 1
+    ss_box[:,:, 2::4] = width - oldx1 - 1
     return ss_box
 
 def im_detect(net, im, roidb_i):
