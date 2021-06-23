@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import torch.nn.functional as F
+from functools import reduce
 
 def bbox_overlaps(boxes, query_boxes):
     """
@@ -204,3 +206,44 @@ def smooth_l1_loss(input, target, beta=1. / 9, size_average=True, reduction=True
     if reduction == False:
         return loss
     return loss.sum()
+
+def normalize_atten_maps(atten_maps):
+    atten_shape = atten_maps.size()
+    batch_mins, _ = torch.min(atten_maps.view(atten_shape[0:-2] + (-1,)), dim=-1, keepdim=True)
+    batch_maxs, _ = torch.max(atten_maps.view(atten_shape[0:-2] + (-1,)), dim=-1, keepdim=True)
+    atten_normed = torch.div(atten_maps.view(atten_shape[0:-2] + (-1,)) - batch_mins,
+                             batch_maxs - batch_mins + 1e-7)
+    atten_normed = atten_normed.view(atten_shape)
+    return atten_normed
+
+def ca_lw(rois_conv, con_loss):
+    conv_attention_o_1_1 = torch.sigmoid(torch.mean(rois_conv[0][0], dim=0))
+    conv_attention_f_1_1 = torch.sigmoid(torch.mean(rois_conv[0][1], dim=0)).flip(dims=[1])
+    conv_attention_o_1_2 = torch.sigmoid(torch.mean(rois_conv[1][0], dim=0))
+    conv_attention_f_1_2 = torch.sigmoid(torch.mean(rois_conv[1][1], dim=0)).flip(dims=[1])
+    conv_self_attention_gt_1_1 = torch.max(conv_attention_o_1_1, conv_attention_f_1_1).clone().detach()
+    conv_self_attention_gt_1_2 = torch.max(conv_attention_o_1_2, conv_attention_f_1_2).clone().detach()
+    con_loss += F.mse_loss(conv_self_attention_gt_1_1, conv_attention_o_1_1)
+    con_loss += F.mse_loss(conv_self_attention_gt_1_1, conv_attention_f_1_1)
+    con_loss += F.mse_loss(conv_self_attention_gt_1_2, conv_attention_o_1_2)
+    con_loss += F.mse_loss(conv_self_attention_gt_1_2, conv_attention_f_1_2)
+    return con_loss
+
+def ca_iw(keep_inds, rois, num_rois, con_loss):
+    union_inds = reduce(np.intersect1d, (keep_inds[0], keep_inds[1], keep_inds[2], keep_inds[3]))
+    keep_inds_new = np.concatenate((union_inds, union_inds + num_rois, union_inds + num_rois * 2, union_inds + num_rois * 3))
+    num_each = int(keep_inds_new.shape[0] / 4)
+    rois_self_attention_1 = torch.mean(rois[keep_inds_new], dim=1)
+    rois_self_attention_1 = torch.sigmoid(normalize_atten_maps(rois_self_attention_1))
+
+    rois_self_attention_gt_1 = rois_self_attention_1.clone().detach()
+    rois_self_attention_gt_1_1 = torch.max(rois_self_attention_gt_1[0:num_each],
+                                           rois_self_attention_gt_1[num_each:num_each * 2].flip(dims=[2]))
+    rois_self_attention_gt_1_2 = torch.max(rois_self_attention_gt_1[num_each * 2:num_each * 3],
+                                           rois_self_attention_gt_1[num_each * 3:num_each * 4].flip(dims=[2]))
+    rois_self_attention_gt_1 = torch.max(rois_self_attention_gt_1_1, rois_self_attention_gt_1_2)
+    con_loss += F.mse_loss(rois_self_attention_1[0:num_each], rois_self_attention_gt_1)
+    con_loss += F.mse_loss(rois_self_attention_1[num_each:num_each * 2], rois_self_attention_gt_1.flip(dims=[2]))
+    con_loss += F.mse_loss(rois_self_attention_1[num_each * 2:num_each * 3], rois_self_attention_gt_1)
+    con_loss += F.mse_loss(rois_self_attention_1[num_each * 3:num_each * 4], rois_self_attention_gt_1.flip(dims=[2]))
+    return con_loss
