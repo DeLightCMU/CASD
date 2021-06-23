@@ -1,3 +1,5 @@
+Update(May 30): Please use the lastest parallelized version.
+
 # Comprehensive Attention Self-Distillation for Weakly-Supervised Object Detection
 This is the official implementation of:
 
