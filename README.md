@@ -1,6 +1,6 @@
 # Comprehensive Attention Self-Distillation for Weakly-Supervised Object Detection
 
-Update(May 30): Please use the lastest parallelized version.
+Update(May 30): Please use the latest parallelized version(May30 branch;24G GPU required). The VOC07 is around 57.00% mAP(slightly better than reported and download the model below). For 12G GPU users, please use the master branch(Some functions are cut down to save memory).
 
 This is the official implementation of:
 
